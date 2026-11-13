@@ -3,13 +3,15 @@
 /**
  * 代理控制台 —— 零依赖 Node 服务
  *  · 静态前端
- *  · 多账号登录（管理员 / 子账号）+ 会话 Cookie
+ *  · 登录走 auth.jizhang.org（经服务器 hub 中转，client_secret 不落本地）
+ *  · 管理员 / 子账号名单、mihomo 配置模板、内核文件都由服务器 hub 下发
  *  · 子账号同步进 mihomo 的 7891 监听器（强制鉴权，无法绕过）
  *  · 反向代理 mihomo external-controller（仅管理员）
  *  · 网页内开关代理（启动/停止内核 + 系统代理）
  */
 
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -19,7 +21,7 @@ const { spawn, execFile } = require('child_process');
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
 const CONFIG_FILE = path.join(ROOT, 'config.json');
-const USERS_FILE = path.join(ROOT, 'users.json');
+const HUB_CACHE = path.join(ROOT, '.hub-cache.json');
 const SECRET_FILE = path.join(ROOT, '.session-secret');
 const FIREWALL_MARK = path.join(ROOT, '.lan-ok');
 const SET_PROXY_PS1 = path.join(ROOT, 'lib', 'set-proxy.ps1');
@@ -28,6 +30,8 @@ const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
 const PORT = Number(config.port) || 8080;
 const SESSION_HOURS = Number(config.sessionHours) || 12;
 const LAN_PORT = Number(config.lanPort) || 7891;
+const HUB = String(config.hub || 'https://mihomo.jizhang.org').replace(/\/+$/, '');
+const SYNC_MINUTES = Number(config.syncMinutes) || 30;
 
 let secret;
 if (fs.existsSync(SECRET_FILE)) {
@@ -125,49 +129,81 @@ const exec = (file, args, opts) =>
     );
   });
 
-/* ----------------------------------------------------------------- users */
+/* ------------------------------------------------------------- hub cache */
+// .hub-cache.json：服务器下发内容的本地缓存，断网时也能按上次的名单起内核
+//   { users: [{proxyUser, proxyPass}], files: {name: sha256}, admin: {email, token, exp}, syncedAt, error }
 
-function validUsername(v) {
-  return /^[A-Za-z0-9._-]{3,32}$/.test(v);
-}
-
-function validPassword(v) {
-  return typeof v === 'string' && v.length >= 6 && v.length <= 64 && !/[\r\n]/.test(v);
-}
-
-function randomPassword() {
-  const alphabet = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  return Array.from(crypto.randomBytes(12))
-    .map((b) => alphabet[b % alphabet.length])
-    .join('');
-}
-
-function saveUsers(data) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
-}
-
-function loadUsers() {
-  if (!fs.existsSync(USERS_FILE)) {
-    const pass = randomPassword();
-    const data = {
-      users: [{ username: 'admin', pass, role: 'admin', created: Date.now() }]
-    };
-    saveUsers(data);
-    console.log('');
-    console.log('  ⚠ 首次启动，已创建管理员账号');
-    console.log(`    账号 admin   密码 ${pass}`);
-    console.log('');
-    return data;
+function loadCache() {
+  try {
+    return JSON.parse(fs.readFileSync(HUB_CACHE, 'utf8'));
+  } catch {
+    return { users: [], files: {}, admin: null, syncedAt: 0, error: '' };
   }
-  return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
 }
 
-function findUser(name) {
-  return loadUsers().users.find((u) => u.username === String(name || ''));
+function saveCache(data) {
+  fs.writeFileSync(HUB_CACHE, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
-function publicUser(u) {
-  return { username: u.username, role: u.role, created: u.created, pass: u.pass };
+/* ------------------------------------------------------------- hub client */
+
+function hubRequest(method, apiPath, token, body, timeout = 15000) {
+  const url = new URL(HUB + apiPath);
+  const lib = url.protocol === 'https:' ? https : http;
+  const data = body === undefined ? null : JSON.stringify(body);
+  const headers = { Accept: 'application/json', 'User-Agent': 'mihomo-panel/2.0' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (data) {
+    headers['Content-Type'] = 'application/json';
+    headers['Content-Length'] = Buffer.byteLength(data);
+  }
+  return new Promise((resolve, reject) => {
+    const req = lib.request(url, { method, headers, timeout }, (r) => {
+      const chunks = [];
+      r.on('data', (c) => chunks.push(c));
+      r.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let json = null;
+        try {
+          json = text ? JSON.parse(text) : {};
+        } catch {
+          json = { error: text.slice(0, 200) };
+        }
+        resolve({ status: r.statusCode || 502, json });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('服务器响应超时')));
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+function hubDownload(name, token, dest) {
+  const url = new URL(`${HUB}/api/files/${encodeURIComponent(name)}`);
+  const lib = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve, reject) => {
+    const req = lib.request(
+      url,
+      { method: 'GET', headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'mihomo-panel/2.0' }, timeout: 120000 },
+      (r) => {
+        if (r.statusCode !== 200) {
+          r.resume();
+          return reject(new Error(`下载 ${name} 失败：HTTP ${r.statusCode}`));
+        }
+        const hash = crypto.createHash('sha256');
+        const out = fs.createWriteStream(dest);
+        r.on('data', (c) => hash.update(c));
+        r.pipe(out);
+        out.on('finish', () => resolve(hash.digest('hex')));
+        out.on('error', reject);
+        r.on('error', reject);
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error(`下载 ${name} 超时`)));
+    req.on('error', reject);
+    req.end();
+  });
 }
 
 /* --------------------------------------------------- mihomo config sync */
@@ -184,11 +220,23 @@ function mihomoConfig() {
   return path.join(mihomoDir(), 'config.yaml');
 }
 
-function ensureMihomoConfig() {
-  const file = mihomoConfig();
-  if (fs.existsSync(file)) return;
-  const example = path.join(mihomoDir(), 'config.example.yaml');
-  if (fs.existsSync(example)) fs.copyFileSync(example, file);
+// 服务器下发的 config.yaml 存成 config.base.yaml，面板在它上面注入 7891 的账号块
+function mihomoBase() {
+  return path.join(mihomoDir(), 'config.base.yaml');
+}
+
+// 服务器文件名 -> 本地路径
+function localPathFor(name) {
+  if (name === 'config.yaml') return mihomoBase();
+  return path.join(mihomoDir(), name);
+}
+
+function fileSha256(file) {
+  try {
+    return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  } catch {
+    return '';
+  }
 }
 
 function yamlStr(v) {
@@ -196,6 +244,8 @@ function yamlStr(v) {
 }
 
 function usersBlock(users) {
+  // 名单为空时放一个随机占位账号：mihomo 的 users 为空等于不鉴权，绝不能留空
+  const list = users.length ? users : [{ proxyUser: 'locked', proxyPass: crypto.randomBytes(18).toString('hex') }];
   const lines = [
     '# >>> panel-users (auto-generated by panel, do not edit)',
     'listeners:',
@@ -205,32 +255,125 @@ function usersBlock(users) {
     '    listen: 0.0.0.0',
     '    users:'
   ];
-  for (const u of users) {
-    lines.push(`      - username: ${yamlStr(u.username)}`);
-    lines.push(`        password: ${yamlStr(u.pass)}`);
+  for (const u of list) {
+    lines.push(`      - username: ${yamlStr(u.proxyUser)}`);
+    lines.push(`        password: ${yamlStr(u.proxyPass)}`);
   }
   lines.push('# <<< panel-users');
   return lines.join('\n');
 }
 
-async function syncMihomoUsers() {
-  const file = mihomoConfig();
+function injectUsers(text, block) {
+  if (/# >>> panel-users[\s\S]*?# <<< panel-users/.test(text)) {
+    return text.replace(/# >>> panel-users[\s\S]*?# <<< panel-users/, () => block);
+  }
+  if (/^listeners:[\s\S]*?(?=^proxy-providers:)/m.test(text)) {
+    return text.replace(/^listeners:[\s\S]*?(?=^proxy-providers:)/m, () => block + '\n\n');
+  }
+  if (/^proxy-providers:/m.test(text)) return text.replace(/^proxy-providers:/m, () => block + '\n\nproxy-providers:');
+  return text.trimEnd() + '\n\n' + block + '\n';
+}
+
+function baseConfigText() {
+  for (const f of [mihomoBase(), mihomoConfig(), path.join(mihomoDir(), 'config.example.yaml')]) {
+    if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8');
+  }
+  return null;
+}
+
+// 用「服务器模板 + 当前名单」生成 config.yaml；内容有变化才热重载
+async function writeMihomoConfig() {
   try {
-    let text = fs.readFileSync(file, 'utf8');
-    const block = usersBlock(loadUsers().users);
-    if (/# >>> panel-users[\s\S]*?# <<< panel-users/.test(text)) {
-      text = text.replace(/# >>> panel-users[\s\S]*?# <<< panel-users/, block);
-    } else if (/^listeners:[\s\S]*?(?=^proxy-providers:)/m.test(text)) {
-      text = text.replace(/^listeners:[\s\S]*?(?=^proxy-providers:)/m, block + '\n\n');
-    } else {
-      text = text.replace(/^proxy-providers:/m, block + '\n\nproxy-providers:');
-    }
+    const base = baseConfigText();
+    if (base == null) throw new Error('没有可用的 mihomo 配置模板，请先从服务器同步');
+    const text = injectUsers(base, usersBlock(loadCache().users || []));
+    const file = mihomoConfig();
+    const old = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    if (old === text) return true;
     fs.writeFileSync(file, text);
     await reloadCore();
     return true;
   } catch (e) {
-    console.error('同步 mihomo 账号失败:', e.message);
+    console.error('生成 mihomo 配置失败:', e.message);
     return false;
+  }
+}
+
+/* ------------------------------------------------------------ hub sync */
+
+let syncing = null;
+
+// 拉名单 + 拉文件 + 重写配置。token 为管理员的 hub token
+function syncFromHub(token) {
+  if (syncing) return syncing;
+  syncing = (async () => {
+    const cache = loadCache();
+    const tk = token || (cache.admin && cache.admin.exp * 1000 > Date.now() ? cache.admin.token : '');
+    if (!tk) return { ok: false, error: '还没有管理员登录过，无法同步' };
+    const report = { ok: true, updated: [], pending: [], error: '' };
+    try {
+      const u = await hubRequest('GET', '/api/users', tk);
+      if (u.status !== 200) throw new Error(u.json.error || `拉取名单失败 HTTP ${u.status}`);
+      cache.users = (u.json.users || []).map((x) => ({ proxyUser: x.proxyUser, proxyPass: x.proxyPass }));
+
+      const f = await hubRequest('GET', '/api/files', tk);
+      if (f.status !== 200) throw new Error(f.json.error || `拉取文件清单失败 HTTP ${f.status}`);
+      cache.files = cache.files || {};
+      for (const item of f.json.files || []) {
+        if (!/^[A-Za-z0-9._-]{1,128}$/.test(item.name)) continue;
+        const dest = localPathFor(item.name);
+        if (fileSha256(dest) === item.sha256) {
+          cache.files[item.name] = item.sha256;
+          continue;
+        }
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        const tmp = dest + '.download';
+        const got = await hubDownload(item.name, tk, tmp);
+        if (got !== item.sha256) {
+          fs.rmSync(tmp, { force: true });
+          throw new Error(`${item.name} 校验失败`);
+        }
+        try {
+          fs.renameSync(tmp, dest);
+          report.updated.push(item.name);
+        } catch {
+          // Windows 上内核运行中 exe 被占用：先放成 .new，下次启动内核前替换
+          fs.renameSync(tmp, dest + '.new');
+          report.pending.push(item.name);
+        }
+        cache.files[item.name] = item.sha256;
+      }
+      cache.syncedAt = Date.now();
+      cache.error = '';
+    } catch (e) {
+      report.ok = false;
+      report.error = e.message;
+      cache.error = e.message;
+    }
+    saveCache(cache);
+    await writeMihomoConfig();
+    report.syncedAt = cache.syncedAt;
+    return report;
+  })().finally(() => {
+    syncing = null;
+  });
+  return syncing;
+}
+
+// 把同步时被占用的文件（*.new）换上去；只在内核停止时调用
+function applyPendingFiles() {
+  try {
+    for (const f of fs.readdirSync(mihomoDir())) {
+      if (!f.endsWith('.new')) continue;
+      const dest = path.join(mihomoDir(), f.slice(0, -4));
+      try {
+        fs.renameSync(path.join(mihomoDir(), f), dest);
+      } catch (e) {
+        console.error('替换文件失败:', f, e.message);
+      }
+    }
+  } catch {
+    /* dir missing */
   }
 }
 
@@ -329,6 +472,8 @@ async function startProxy() {
   }
   let online = await coreUp();
   if (!online) {
+    applyPendingFiles();
+    await writeMihomoConfig();
     try {
       const child = spawn(mihomoExe(), ['-d', mihomoDir()], {
         cwd: mihomoDir(),
@@ -356,6 +501,7 @@ async function stopProxy() {
   await setSystemProxy(false);
   await exec('taskkill', ['/IM', config.mihomoExe || 'mihomo-windows-amd64.exe', '/F']);
   await sleep(700);
+  applyPendingFiles();
   return proxyStatus();
 }
 
@@ -395,7 +541,7 @@ function lanSummary(user) {
     panelHostUrl: urls.host,
     proxyUrl: lanProxyIp,
     lanProxyUrl: lanProxyIp,
-    lanUser: user ? user.username : '',
+    lanUser: (user && user.proxyUser) || '',
     firewallOpen: fs.existsSync(FIREWALL_MARK),
     core: config.core
   };
@@ -502,82 +648,107 @@ function serveStatic(req, res, pathname) {
   });
 }
 
-/* -------------------------------------------------------------- login lock */
+/* ---------------------------------------------------------------- session */
+// sid Cookie = HMAC 签名的 { e: 邮箱, r: 角色, h: hub token, exp }
+// hub token 每次调用 hub 时由服务器重新校验，子账号被删后立即失效
 
-const attempts = new Map();
-
-function tooMany(ip) {
-  const rec = attempts.get(ip);
-  if (!rec) return false;
-  if (Date.now() > rec.resetAt) {
-    attempts.delete(ip);
-    return false;
-  }
-  return rec.count >= 8;
+function getSession(req) {
+  const s = verify(parseCookies(req.headers.cookie || '').sid);
+  if (!s || !s.e || !s.h) return null;
+  return { email: s.e, role: s.r === 'admin' ? 'admin' : 'user', token: s.h, core: config.core };
 }
 
-function noteFailure(ip) {
-  const rec = attempts.get(ip) || { count: 0, resetAt: Date.now() + 10 * 60 * 1000 };
-  rec.count += 1;
-  attempts.set(ip, rec);
+function sessionCookie(email, role, token) {
+  const sid = sign({ e: email, r: role, h: token, exp: Date.now() + SESSION_HOURS * 3600 * 1000 });
+  return `sid=${sid}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_HOURS * 3600}`;
+}
+
+function originOf(req) {
+  const host = String(req.headers.host || `127.0.0.1:${PORT}`);
+  if (!/^[A-Za-z0-9.\-:[\]]{1,255}$/.test(host)) return `http://127.0.0.1:${PORT}`;
+  return `http://${host}`;
+}
+
+function redirect(res, location, headers = {}) {
+  res.writeHead(302, { Location: location, 'Cache-Control': 'no-store', ...headers });
+  res.end();
+}
+
+async function readJson(req) {
+  try {
+    return JSON.parse((await readBody(req, 8192)) || '{}');
+  } catch {
+    return null;
+  }
+}
+
+// 把 hub 的响应原样转给浏览器
+function relay(res, r) {
+  return send(res, r.status, r.json || {});
+}
+
+async function hubCall(res, method, apiPath, token, body) {
+  try {
+    return await hubRequest(method, apiPath, token, body);
+  } catch (e) {
+    send(res, 502, { error: '连不上服务器：' + e.message });
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ server */
 
 const server = http.createServer(async (req, res) => {
-  const ip = (req.socket.remoteAddress || '').replace('::ffff:', '');
-  let pathname = '/';
+  let url;
   try {
-    pathname = new URL(req.url, 'http://localhost').pathname;
+    url = new URL(req.url, 'http://localhost');
   } catch {
-    /* ignore */
+    return send(res, 400, { error: 'bad url' });
+  }
+  const pathname = url.pathname;
+
+  // ---------- 登录：跳到服务器 hub，再由 hub 跳 auth.jizhang.org ----------
+  if (pathname === '/auth/login' && req.method === 'GET') {
+    const st = crypto.randomBytes(24).toString('base64url');
+    const ret = `${originOf(req)}/auth/finish`;
+    const target = `${HUB}/login?${new URLSearchParams({ return: ret, state: st })}`;
+    return redirect(res, target, {
+      'Set-Cookie': `pst=${st}; Path=/auth; HttpOnly; SameSite=Lax; Max-Age=600`
+    });
   }
 
-  // ---------- 登录 ----------
-  if (pathname === '/api/login' && req.method === 'POST') {
-    if (tooMany(ip)) return send(res, 429, { error: '尝试次数过多，请 10 分钟后再试' });
+  if (pathname === '/auth/finish' && req.method === 'GET') {
+    const fail = (msg) => redirect(res, `/?login_error=${encodeURIComponent(msg)}`, {
+      'Set-Cookie': 'pst=; Path=/auth; HttpOnly; Max-Age=0'
+    });
+    const ticket = url.searchParams.get('ticket') || '';
+    const st = url.searchParams.get('state') || '';
+    const expect = parseCookies(req.headers.cookie || '').pst || '';
+    if (!st || !expect || !safeEqual(st, expect)) return fail('登录状态校验失败，请重新登录');
 
-    let body;
+    let r;
     try {
-      body = JSON.parse(await readBody(req, 8192));
-    } catch {
-      return send(res, 400, { error: '请求格式错误' });
+      r = await hubRequest('POST', '/api/ticket/redeem', null, { ticket });
+    } catch (e) {
+      return fail('连不上服务器：' + e.message);
     }
+    if (r.status !== 200 || !r.json.token) return fail(r.json.error || '登录失败');
 
-    const username = String(body.user || '').trim();
-    const pass = String(body.pass || '');
-    const host = String(body.host || '127.0.0.1').trim();
-    const port = Number(body.port || 9090);
-
-    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(host)) return send(res, 400, { error: '内核地址不合法' });
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return send(res, 400, { error: '端口不合法' });
-
-    const user = findUser(username);
-    if (!user || !safeEqual(pass, user.pass)) {
-      noteFailure(ip);
-      return send(res, 401, { error: '账号或密码不正确' });
+    const { token, email, role, exp } = r.json;
+    if (role === 'admin') {
+      const cache = loadCache();
+      cache.admin = { email, token, exp };
+      saveCache(cache);
+      syncFromHub(token).then((rep) => {
+        if (!rep.ok) console.error('同步失败:', rep.error);
+      });
     }
-    attempts.delete(ip);
-
-    const core = `${host}:${port}`;
-    const token = sign({ u: user.username, core, exp: Date.now() + SESSION_HOURS * 3600 * 1000 });
-    const online = await coreUp();
-
-    return send(
-      res,
-      200,
-      {
-        ok: true,
-        core,
-        online,
-        role: user.role,
-        user: user.username,
-        lan: lanSummary(user)
-      },
-      {
-        'Set-Cookie': `sid=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_HOURS * 3600}`
-      }
-    );
+    res.writeHead(302, {
+      Location: '/',
+      'Cache-Control': 'no-store',
+      'Set-Cookie': [sessionCookie(email, role, token), 'pst=; Path=/auth; HttpOnly; Max-Age=0']
+    });
+    return res.end();
   }
 
   if (pathname === '/api/logout' && req.method === 'POST') {
@@ -586,60 +757,61 @@ const server = http.createServer(async (req, res) => {
 
   // ---------- 会话 ----------
   if (pathname === '/api/session' && req.method === 'GET') {
-    const s = verify(parseCookies(req.headers.cookie || '').sid);
-    const user = s && findUser(s.u);
-    if (!s || !user) return send(res, 200, { authed: false });
+    const s = getSession(req);
+    if (!s) return send(res, 200, { authed: false, hub: HUB });
     return send(res, 200, {
       authed: true,
-      user: user.username,
-      role: user.role,
+      user: s.email,
+      role: s.role,
       core: s.core,
-      lan: lanSummary(user)
+      hub: HUB,
+      lan: lanSummary(null)
     });
   }
 
   // ---------- 以下需要登录 ----------
-  const session = verify(parseCookies(req.headers.cookie || '').sid);
-  const me = session && findUser(session.u);
-  if (pathname.startsWith('/api/') && (!session || !me)) {
+  const session = getSession(req);
+  if (pathname.startsWith('/api/') && !session) {
     return send(res, 401, { authed: false, error: '未登录' });
   }
 
-  const isAdmin = !!me && me.role === 'admin';
-  const needAdmin = () => {
-    send(res, 403, { error: '仅管理员可操作' });
-  };
+  const isAdmin = !!session && session.role === 'admin';
+  const needAdmin = () => send(res, 403, { error: '仅管理员可操作' });
 
   if (pathname === '/api/me' && req.method === 'GET') {
+    const r = await hubCall(res, 'GET', '/api/me', session.token);
+    if (!r) return;
+    if (r.status === 401 || r.status === 403) {
+      return send(res, 401, { authed: false, error: r.json.error || '账号已失效' }, {
+        'Set-Cookie': 'sid=; Path=/; HttpOnly; Max-Age=0'
+      });
+    }
+    if (r.status !== 200) return relay(res, r);
+    const lan = lanSummary(r.json);
     return send(res, 200, {
-      user: me.username,
-      role: me.role,
-      created: me.created,
-      lan: lanSummary(me),
-      proxy: { address: lanSummary(me).lanProxyUrl, port: LAN_PORT }
+      user: r.json.email,
+      role: r.json.role,
+      proxyUser: r.json.proxyUser,
+      proxyPass: r.json.proxyPass,
+      lan,
+      proxy: { address: lan.lanProxyUrl, port: LAN_PORT }
     });
   }
 
   if (pathname === '/api/me/password' && req.method === 'POST') {
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, 8192));
-    } catch {
-      return send(res, 400, { error: '请求格式错误' });
+    const body = await readJson(req);
+    if (!body) return send(res, 400, { error: '请求格式错误' });
+    const r = await hubCall(res, 'POST', '/api/me/proxy-password', session.token, { pass: body.next || '' });
+    if (!r) return;
+    if (r.status === 200) {
+      if (isAdmin) await syncFromHub(session.token);
+      else syncFromHub().catch(() => {});
     }
-    if (!safeEqual(String(body.current || ''), me.pass)) return send(res, 400, { error: '当前密码不正确' });
-    if (!validPassword(body.next)) return send(res, 400, { error: '新密码需 6-64 位且不含换行' });
-
-    const data = loadUsers();
-    const target = data.users.find((u) => u.username === me.username);
-    target.pass = body.next;
-    saveUsers(data);
-    await syncMihomoUsers();
-    return send(res, 200, { ok: true });
+    return relay(res, r);
   }
 
   if (pathname === '/api/lan' && req.method === 'GET') {
-    return send(res, 200, lanSummary(me));
+    return send(res, 200, lanSummary(null));
   }
 
   if (pathname === '/api/exit' && req.method === 'GET') {
@@ -649,6 +821,19 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       return send(res, 502, { error: e.message });
     }
+  }
+
+  // ---------- 服务器下发 ----------
+  if (pathname === '/api/sync' && req.method === 'GET') {
+    if (!isAdmin) return needAdmin();
+    const c = loadCache();
+    return send(res, 200, { hub: HUB, syncedAt: c.syncedAt || 0, error: c.error || '', files: c.files || {}, users: (c.users || []).length });
+  }
+
+  if (pathname === '/api/sync' && req.method === 'POST') {
+    if (!isAdmin) return needAdmin();
+    const rep = await syncFromHub(session.token);
+    return send(res, rep.ok ? 200 : 502, rep);
   }
 
   // ---------- 代理开关 ----------
@@ -669,77 +854,44 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, await stopProxy());
   }
 
-  // ---------- 账号管理 ----------
+  // ---------- 账号管理（数据在服务器，改完立即同步到本机内核） ----------
   if (pathname === '/api/users' && req.method === 'GET') {
     if (!isAdmin) return needAdmin();
-    return send(res, 200, { users: loadUsers().users.map(publicUser) });
+    const r = await hubCall(res, 'GET', '/api/users', session.token);
+    if (r) relay(res, r);
+    return;
   }
 
   if (pathname === '/api/users' && req.method === 'POST') {
     if (!isAdmin) return needAdmin();
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, 8192));
-    } catch {
-      return send(res, 400, { error: '请求格式错误' });
-    }
-    const username = String(body.username || '').trim();
-    const pass = String(body.pass || '') || randomPassword();
-
-    if (!validUsername(username)) return send(res, 400, { error: '用户名需 3-32 位字母/数字/._-' });
-    if (!validPassword(pass)) return send(res, 400, { error: '密码需 6-64 位且不含换行' });
-
-    const data = loadUsers();
-    if (data.users.some((u) => u.username.toLowerCase() === username.toLowerCase())) {
-      return send(res, 409, { error: '用户名已存在' });
-    }
-    const created = { username, pass, role: 'user', created: Date.now() };
-    data.users.push(created);
-    saveUsers(data);
-    await syncMihomoUsers();
-    return send(res, 201, { ok: true, user: publicUser(created) });
+    const body = await readJson(req);
+    if (!body) return send(res, 400, { error: '请求格式错误' });
+    const r = await hubCall(res, 'POST', '/api/users', session.token, {
+      email: body.email,
+      proxyUser: body.proxyUser,
+      pass: body.pass
+    });
+    if (!r) return;
+    if (r.status < 300) await syncFromHub(session.token);
+    return relay(res, r);
   }
 
-  const userMatch = /^\/api\/users\/([^/]+)$/.exec(pathname);
+  const userMatch = /^\/api\/users\/([^/]+)(\/password)?$/.exec(pathname);
   if (userMatch) {
     if (!isAdmin) return needAdmin();
-    const name = decodeURIComponent(userMatch[1]);
-    const data = loadUsers();
-    const target = data.users.find((u) => u.username === name);
-    if (!target) return send(res, 404, { error: '账号不存在' });
-
-    if (req.method === 'DELETE') {
-      if (target.username === me.username) return send(res, 400, { error: '不能删除当前登录账号' });
-      if (target.role === 'admin' && data.users.filter((u) => u.role === 'admin').length <= 1) {
-        return send(res, 400, { error: '至少要保留一个管理员' });
-      }
-      data.users = data.users.filter((u) => u.username !== name);
-      saveUsers(data);
-      await syncMihomoUsers();
-      return send(res, 200, { ok: true });
+    const name = encodeURIComponent(decodeURIComponent(userMatch[1]));
+    let r;
+    if (userMatch[2] && req.method === 'POST') {
+      const body = (await readJson(req)) || {};
+      r = await hubCall(res, 'POST', `/api/users/${name}/password`, session.token, { pass: body.pass || '' });
+    } else if (!userMatch[2] && req.method === 'DELETE') {
+      r = await hubCall(res, 'DELETE', `/api/users/${name}`, session.token);
+    } else {
+      return send(res, 405, { error: 'method not allowed' });
     }
-  }
-
-  const passMatch = /^\/api\/users\/([^/]+)\/password$/.exec(pathname);
-  if (passMatch && req.method === 'POST') {
-    if (!isAdmin) return needAdmin();
-    const name = decodeURIComponent(passMatch[1]);
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, 8192));
-    } catch {
-      return send(res, 400, { error: '请求格式错误' });
-    }
-    const pass = String(body.pass || '') || randomPassword();
-    if (!validPassword(pass)) return send(res, 400, { error: '密码需 6-64 位且不含换行' });
-
-    const data = loadUsers();
-    const target = data.users.find((u) => u.username === name);
-    if (!target) return send(res, 404, { error: '账号不存在' });
-    target.pass = pass;
-    saveUsers(data);
-    await syncMihomoUsers();
-    return send(res, 200, { ok: true, pass });
+    if (!r) return;
+    if (r.status < 300) await syncFromHub(session.token);
+    return relay(res, r);
   }
 
   // ---------- 内核反代（仅管理员） ----------
@@ -776,10 +928,9 @@ const server = http.createServer(async (req, res) => {
 /* --------------------------------------------------------------- websocket */
 
 server.on('upgrade', (req, socket) => {
-  const session = verify(parseCookies(req.headers.cookie || '').sid);
-  const user = session && findUser(session.u);
+  const session = getSession(req);
   const m = /^\/api\/ws(\/.*)$/.exec(req.url || '');
-  if (!session || !user || user.role !== 'admin' || !m) {
+  if (!session || session.role !== 'admin' || !m) {
     socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     return socket.destroy();
   }
@@ -816,17 +967,12 @@ server.on('upgrade', (req, socket) => {
 /* -------------------------------------------------------------------- boot */
 
 (async function boot() {
-  ensureMihomoConfig();
-  const data = loadUsers();
-  if (data.users.length && (await coreUp())) {
-    const file = mihomoConfig();
-    try {
-      const text = fs.readFileSync(file, 'utf8');
-      if (!text.includes(usersBlock(data.users))) await syncMihomoUsers();
-    } catch {
-      /* config missing */
-    }
-  }
+  // 先用本地缓存生成配置（离线也能用），再尝试从服务器拉最新
+  await writeMihomoConfig();
+  const rep = await syncFromHub();
+  if (rep.ok) console.log(`  已从服务器同步${rep.updated.length ? '：' + rep.updated.join(', ') : '（无变化）'}`);
+  else console.log(`  未同步服务器：${rep.error}`);
+  setInterval(() => syncFromHub().catch(() => {}), SYNC_MINUTES * 60 * 1000).unref();
 })();
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -838,6 +984,7 @@ server.listen(PORT, '0.0.0.0', () => {
   for (const i of lan.ips) console.log(`  局域网   http://${i.ip}:${PORT}   (${i.iface})`);
   console.log(`  主机名   ${lan.panelHostUrl}`);
   console.log(`  内核     ${config.core}`);
+  console.log(`  服务器   ${HUB}（登录 / 名单 / 文件下发）`);
   console.log(`  代理入口 ${lan.lanProxyUrl}（需子账号）`);
   console.log('');
 });

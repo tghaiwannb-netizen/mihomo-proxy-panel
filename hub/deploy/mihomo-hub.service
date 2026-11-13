@@ -1,0 +1,21 @@
+[Unit]
+Description=mihomo-hub (proxy panel login & file distribution)
+After=network-online.target
+
+[Service]
+Type=simple
+User=mihomo-hub
+Group=mihomo-hub
+WorkingDirectory=/opt/mihomo-hub
+Environment=HUB_ENV=/opt/mihomo-hub/hub.env
+ExecStart=/usr/bin/python3 -I /opt/mihomo-hub/hub.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/mihomo-hub/data
+
+[Install]
+WantedBy=multi-user.target

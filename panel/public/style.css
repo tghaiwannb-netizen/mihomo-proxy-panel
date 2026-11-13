@@ -1062,3 +1062,9 @@ body[data-role="admin"] .user-only { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* 墨清账户登录按钮是 <a> */
+a.btn { text-decoration: none; box-sizing: border-box; }
+#sync-files { margin: 8px 0 0; padding-left: 18px; color: var(--muted, #7a6f63); }
+#sync-files li { margin: 2px 0; word-break: break-all; }
+.card-head .btn { margin-left: auto; }

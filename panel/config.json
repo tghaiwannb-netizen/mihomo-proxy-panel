@@ -5,5 +5,7 @@
   "lanPort": 7891,
   "mihomoDir": "../mihomo",
   "mihomoExe": "mihomo-windows-amd64.exe",
-  "sessionHours": 12
+  "sessionHours": 12,
+  "hub": "https://mihomo.jizhang.org",
+  "syncMinutes": 30
 }

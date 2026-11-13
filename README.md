@@ -10,10 +10,11 @@ mihomo 内核 + 网页控制台：网页开关代理、切节点、看流量，�
    （<https://github.com/MetaCubeX/mihomo/releases>）
 3. 复制配置：`copy mihomo\config.example.yaml mihomo\config.yaml`
 4. 启动：双击 `panel\start-panel.bat`，或桌面快捷方式 **代理控制台**
-5. 首次启动会在控制台打印管理员账号密码，登录后到「账号」页改密码、发子账号
+5. 点「使用墨清账户登录」，用管理员邮箱登录 `auth.jizhang.org`。
+   登录后面板自动从服务器拉取名单、mihomo 配置模板和内核（第 2、3 步可以跳过）
 
-> `panel\users.json`、`mihomo\config.yaml`、内核 exe、订阅缓存都不进仓库，
-> 避免密码和二进制文件提交到 git。
+> 登录、名单、配置模板、内核文件都由服务器上的 hub（`https://mihomo.jizhang.org`）下发，
+> 见 `hub/README.md`。`mihomo\config.yaml`、内核 exe、订阅缓存、`panel\.hub-cache.json` 都不进仓库。
 
 ## 日常使用
 
@@ -23,7 +24,8 @@ mihomo 内核 + 网页控制台：网页开关代理、切节点、看流量，�
 | 双击桌面 **停止代理** | 关闭内核并恢复直连 |
 | 双击桌面 **代理控制台** | 打开网页控制台（127.0.0.1:8080） |
 
-- 账号 / 密码：见 `panel\users.json`（首次启动控制台会自动生成管理员）
+- 控制台登录：墨清账户（auth.jizhang.org），管理员邮箱在服务器 `hub.env` 的 `ADMIN_EMAILS`
+- 代理账号密码：在控制台「账号」页查看，由服务器统一管理
 
 启动后会打开系统代理（浏览器、大部分软件立即生效）。
 启动时脚本会自动等节点就绪，一般 5~30 秒。

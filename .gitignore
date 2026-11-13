@@ -1,11 +1,15 @@
 # 运行数据 / 密钥 —— 不要提交
 panel/users.json
+panel/.hub-cache.json
 panel/.session-secret
 panel/.lan-ok
 
 # mihomo 运行时文件（config.yaml 会被面板写入账号密码）
 mihomo/config.yaml
 mihomo/config.yaml.bak
+mihomo/config.base.yaml
+mihomo/*.new
+mihomo/*.download
 mihomo/free.yaml
 mihomo/cache.db
 mihomo/*.exe
@@ -16,3 +20,9 @@ node_modules/
 Thumbs.db
 .DS_Store
 *.log
+
+# hub 运行数据
+hub/hub.env
+hub/data/
+hub/files/
+__pycache__/

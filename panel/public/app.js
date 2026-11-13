@@ -97,15 +97,14 @@ function wsUrl(path) {
 
 /* ─────────────────────────── auth ─────────────────────────── */
 
-function showLogin() {
+function showLogin(error) {
   state.authed = false;
   stopAll();
   $('#app-screen').hidden = true;
   $('#login-screen').hidden = false;
-  try {
-    $('#user').value = localStorage.getItem('panel-user') || '';
-  } catch { /* ignore */ }
-  setTimeout(() => $('#pass').focus(), 60);
+  const err = $('#login-error');
+  err.hidden = !error;
+  err.textContent = error || '';
 }
 
 function showApp() {
@@ -126,44 +125,6 @@ function applyRole(role) {
 function logoutLocal() {
   showLogin();
 }
-
-$('#login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const btn = $('#login-submit');
-  const err = $('#login-error');
-  err.hidden = true;
-  btn.disabled = true;
-  btn.querySelector('span').textContent = '连接中…';
-
-  try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        host: $('#core-host').value.trim() || '127.0.0.1',
-        port: Number($('#core-port').value) || 9090,
-        user: $('#user').value.trim(),
-        pass: $('#pass').value
-      })
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || '登录失败');
-
-    state.core = data.core;
-    state.lan = data.lan;
-    applyRole(data.role);
-    try { localStorage.setItem('panel-user', $('#user').value.trim()); } catch { /* ignore */ }
-    showApp();
-    boot();
-  } catch (e2) {
-    err.textContent = e2.message;
-    err.hidden = false;
-    $('#pass').select();
-  } finally {
-    btn.disabled = false;
-    btn.querySelector('span').textContent = '连接';
-  }
-});
 
 async function doLogout() {
   try { await fetch('/api/logout', { method: 'POST' }); } catch { /* ignore */ }
@@ -667,7 +628,7 @@ function renderLan() {
 
   $('#lan-url').textContent = lan.panelUrl;
   $('#lan-proxy').textContent = lan.lanProxyUrl;
-  $('#lan-user').textContent = lan.lanUser;
+  const lu = $('#lan-user'); if (lu) lu.textContent = lan.lanUser;
 
   const ul = $('#lan-addrs');
   ul.textContent = '';
@@ -823,16 +784,19 @@ function lanAddr() {
 async function loadMe() {
   try {
     const r = await fetch('/api/me');
+    if (r.status === 401) return logoutLocal();
     if (!r.ok) return;
     const d = await r.json();
     $('#me-name').textContent = d.user;
     $('#me-proxy').textContent = (d.proxy.address || '').split(':')[0] || '—';
     $('#me-port').textContent = d.proxy.port || '—';
     $('#me-role').textContent = d.role === 'admin' ? '管理员' : '子账号';
+    $('#me-puser').textContent = d.proxyUser || '—';
+    $('#me-ppass').textContent = d.proxyPass || '—';
 
     const el = $('#me-cred');
-    el.textContent = `${d.proxy.address} · ${d.user}`;
-    el.dataset.copy = `代理地址：${d.proxy.address}\n账号：${d.user}\n密码：你设置的那个`;
+    el.textContent = `${d.proxy.address} · ${d.proxyUser}`;
+    el.dataset.copy = `代理地址：${d.proxy.address}\n账号：${d.proxyUser}\n密码：${d.proxyPass}`;
   } catch { /* ignore */ }
 }
 
@@ -861,8 +825,8 @@ function renderUsers() {
   for (const u of state.users) {
     const tr = document.createElement('tr');
 
-    const name = td(u.username);
-    name.className = 'host';
+    const email = td(u.email);
+    email.className = 'host';
 
     const role = document.createElement('td');
     const badge = document.createElement('span');
@@ -870,10 +834,12 @@ function renderUsers() {
     badge.textContent = u.role === 'admin' ? '管理员' : '子账号';
     role.appendChild(badge);
 
-    const pass = td(u.pass);
+    const puser = td(u.proxyUser);
+    puser.className = 'mono';
+    const pass = td(u.proxyPass);
     pass.className = 'mono';
 
-    const created = td(new Date(u.created).toLocaleDateString('zh-CN'));
+    const created = td(u.created ? new Date(u.created).toLocaleDateString('zh-CN') : '—');
     created.className = 'num';
 
     const act = document.createElement('td');
@@ -882,16 +848,19 @@ function renderUsers() {
     const reset = document.createElement('button');
     reset.className = 'btn ghost xs';
     reset.textContent = '重置密码';
-    reset.addEventListener('click', () => resetUser(u.username));
+    reset.addEventListener('click', () => resetUser(u));
+    act.append(reset);
 
-    const del = document.createElement('button');
-    del.className = 'btn ghost xs';
-    del.textContent = '删除';
-    del.style.marginLeft = '6px';
-    del.addEventListener('click', () => deleteUser(u.username));
+    if (u.role !== 'admin') {
+      const del = document.createElement('button');
+      del.className = 'btn ghost xs';
+      del.textContent = '移除';
+      del.style.marginLeft = '6px';
+      del.addEventListener('click', () => deleteUser(u.email));
+      act.append(del);
+    }
 
-    act.append(reset, del);
-    tr.append(name, role, pass, created, act);
+    tr.append(email, role, puser, pass, created, act);
     body.appendChild(tr);
   }
 }
@@ -921,43 +890,46 @@ $('#nu-gen').addEventListener('click', () => {
 
 $('#user-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const username = $('#nu-name').value.trim();
+  const email = $('#nu-email').value.trim();
+  const proxyUser = $('#nu-name').value.trim();
   const pass = $('#nu-pass').value.trim();
+  if (!email) return toast('请填写邮箱');
 
   try {
     const r = await fetch('/api/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, pass })
+      body: JSON.stringify({ email, proxyUser, pass })
     });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || '创建失败');
+    if (!r.ok) throw new Error(d.error || '授权失败');
 
     const u = d.user;
     showCred(
-      `代理地址：${lanAddr()}\n账号：${u.username}\n密码：${u.pass}`,
-      `${u.username} / ${u.pass}`
+      `控制台：用 ${u.email} 登录墨清账户\n代理地址：${lanAddr()}\n账号：${u.proxyUser}\n密码：${u.proxyPass}`,
+      `${u.proxyUser} / ${u.proxyPass}`
     );
+    $('#nu-email').value = '';
     $('#nu-name').value = '';
     $('#nu-pass').value = '';
     loadUsers();
-    toast('子账号已创建');
+    toast('已授权');
   } catch (e2) {
     toast(e2.message);
   }
 });
 
-async function resetUser(name) {
-  if (!confirm(`重置 ${name} 的密码？对方需要用新密码重新连接。`)) return;
+async function resetUser(u) {
+  if (!confirm(`重置 ${u.email} 的代理密码？对方需要用新密码重新连接。`)) return;
   try {
-    const r = await fetch(`/api/users/${encodeURIComponent(name)}/password`, {
+    const r = await fetch(`/api/users/${encodeURIComponent(u.email)}/password`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}'
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || '重置失败');
-    showCred(`代理地址：${lanAddr()}\n账号：${name}\n密码：${d.pass}`, `${name} / ${d.pass}`);
+    showCred(`代理地址：${lanAddr()}\n账号：${u.proxyUser}\n密码：${d.pass}`, `${u.proxyUser} / ${d.pass}`);
     loadUsers();
     toast('密码已重置');
   } catch (e) {
@@ -965,21 +937,20 @@ async function resetUser(name) {
   }
 }
 
-async function deleteUser(name) {
-  if (!confirm(`删除子账号 ${name}？对方会立刻无法连接代理。`)) return;
+async function deleteUser(email) {
+  if (!confirm(`移除 ${email}？对方会立刻无法登录控制台和连接代理。`)) return;
   try {
-    const r = await fetch(`/api/users/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const r = await fetch(`/api/users/${encodeURIComponent(email)}`, { method: 'DELETE' });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.error || '删除失败');
+    if (!r.ok) throw new Error(d.error || '移除失败');
     loadUsers();
-    toast('已删除');
+    toast('已移除');
   } catch (e) {
     toast(e.message);
   }
 }
 
-async function changePassword(curSel, newSel, new2Sel) {
-  const current = $(curSel).value;
+async function changePassword(newSel, new2Sel) {
   const next = $(newSel).value;
   const next2 = $(new2Sel).value;
 
@@ -990,12 +961,13 @@ async function changePassword(curSel, newSel, new2Sel) {
     const r = await fetch('/api/me/password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ current, next })
+      body: JSON.stringify({ next })
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || '修改失败');
-    $(curSel).value = $(newSel).value = $(new2Sel).value = '';
-    toast('密码已更新');
+    $(newSel).value = $(new2Sel).value = '';
+    toast('代理密码已更新');
+    loadMe();
   } catch (e) {
     toast(e.message);
   }
@@ -1003,12 +975,52 @@ async function changePassword(curSel, newSel, new2Sel) {
 
 $('#me-pass-form').addEventListener('submit', (e) => {
   e.preventDefault();
-  changePassword('#mp-cur', '#mp-new', '#mp-new2');
+  changePassword('#mp-new', '#mp-new2');
 });
 
-$('#self-pass-form').addEventListener('submit', (e) => {
-  e.preventDefault();
-  changePassword('#sp-cur', '#sp-new', '#sp-new2');
+/* ─────────────────────────── 服务器下发 ─────────────────────────── */
+
+function renderSync(d) {
+  $('#sync-hub').textContent = d.hub || '—';
+  const when = d.syncedAt ? new Date(d.syncedAt).toLocaleString('zh-CN') : '从未同步';
+  $('#sync-status').textContent = d.error ? `上次同步失败：${d.error}（成功时间：${when}）` : `上次同步：${when}`;
+  const ul = $('#sync-files');
+  ul.textContent = '';
+  for (const [name, sha] of Object.entries(d.files || {})) {
+    const li = document.createElement('li');
+    li.textContent = `${name}  ${String(sha).slice(0, 12)}`;
+    ul.appendChild(li);
+  }
+}
+
+async function loadSync() {
+  if (state.role !== 'admin') return;
+  try {
+    const r = await fetch('/api/sync');
+    if (r.ok) renderSync(await r.json());
+  } catch { /* ignore */ }
+}
+
+$('#sync-now').addEventListener('click', async () => {
+  const btn = $('#sync-now');
+  btn.disabled = true;
+  btn.textContent = '同步中…';
+  try {
+    const r = await fetch('/api/sync', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '同步失败');
+    const parts = [];
+    if (d.updated && d.updated.length) parts.push('已更新 ' + d.updated.join(', '));
+    if (d.pending && d.pending.length) parts.push(d.pending.join(', ') + ' 将在下次启动内核时替换');
+    toast(parts.join('；') || '已是最新');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '立即同步';
+    loadSync();
+    loadUsers();
+  }
 });
 
 /* ─────────────────────────── navigation ─────────────────────────── */
@@ -1031,7 +1043,7 @@ function setView(view) {
   if (view === 'nodes') renderNodes();
   if (view === 'conns') renderConns();
   if (view === 'lan') renderLan();
-  if (view === 'users') loadUsers();
+  if (view === 'users') { loadUsers(); loadSync(); }
   if (view === 'me') loadMe();
   if (view === 'logs') {
     const box = $('#log');
@@ -1043,6 +1055,9 @@ function setView(view) {
 /* ─────────────────────────── init ─────────────────────────── */
 
 (async function init() {
+  const params = new URLSearchParams(location.search);
+  const loginError = params.get('login_error');
+  if (loginError) history.replaceState(null, '', '/');
   try {
     const res = await fetch('/api/session');
     const data = res.ok ? await res.json() : { authed: false };
@@ -1055,5 +1070,5 @@ function setView(view) {
       return;
     }
   } catch { /* ignore */ }
-  showLogin();
+  showLogin(loginError);
 })();
