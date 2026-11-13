@@ -38,6 +38,8 @@ PUBLIC_URL = f"https://{DOMAIN},https://mihomo.jizhang.org"
 CALLBACKS = [f"https://{DOMAIN}/auth/callback", "https://mihomo.jizhang.org/auth/callback"]
 VHOST = Path(f"/www/server/panel/vhost/nginx/{DOMAIN}.conf")
 TS = time.strftime("%Y%m%d-%H%M%S")
+# 站点的扫描防护会拦 Python 默认 UA，自检时用面板同款 UA
+UA = {"User-Agent": "mihomo-panel/2.0"}
 
 NGINX = f"""server {{
     listen 80;
@@ -206,7 +208,7 @@ def main() -> None:
         (f"https://{DOMAIN}/", 200),
     ]:
         try:
-            code = urllib.request.urlopen(url, timeout=15).status
+            code = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=15).status
         except urllib.error.HTTPError as e:
             code = e.code
         except Exception as e:  # noqa: BLE001
@@ -220,7 +222,7 @@ def main() -> None:
 
     opener = urllib.request.build_opener(NoRedirect)
     try:
-        opener.open(f"https://{DOMAIN}/web/login", timeout=15)
+        opener.open(urllib.request.Request(f"https://{DOMAIN}/web/login", headers=UA), timeout=15)
         loc = ""
     except urllib.error.HTTPError as e:
         loc = e.headers.get("Location", "")
@@ -228,7 +230,7 @@ def main() -> None:
     ok &= f"redirect_uri=https%3A%2F%2F{DOMAIN}%2Fauth%2Fcallback" in loc
     if ok:
         try:
-            opener.open(loc, timeout=15)
+            opener.open(urllib.request.Request(loc, headers=UA), timeout=15)
             loc2 = ""
         except urllib.error.HTTPError as e:
             loc2 = e.headers.get("Location", "") if e.code in (301, 302, 303, 307) else f"HTTP {e.code}"
