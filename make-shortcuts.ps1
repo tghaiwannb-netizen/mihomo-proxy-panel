@@ -21,7 +21,7 @@ function New-Lnk($tmpName, $finalName, $script, $icon, $desc, $showWindow = $fal
     [IO.File]::Move($tmp, $final)
 }
 
-New-Lnk '_t1.lnk' '启动代理.lnk'   (Join-Path $root 'start-auth.ps1') 44  '启动代理（需账号密码）'
+New-Lnk '_t1.lnk' '启动代理.lnk'   (Join-Path $root 'start-auth.ps1') 44  '启动代理'
 New-Lnk '_t2.lnk' '停止代理.lnk'   (Join-Path $root 'stop-auth.ps1')  131 '关闭代理，恢复直连'
 New-Lnk '_t3.lnk' '代理控制台.lnk' (Join-Path $root 'panel\start-panel.ps1') 13 '打开代理控制台' $true
 

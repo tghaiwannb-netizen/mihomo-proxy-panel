@@ -54,19 +54,24 @@ load_env(Path(os.environ.get("HUB_ENV", ROOT / "hub.env")))
 AUTH_BASE = os.environ.get("AUTH_BASE_URL", "https://auth.jizhang.org").rstrip("/")
 CLIENT_ID = os.environ.get("AUTH_CLIENT_ID", "mihomo-panel")
 CLIENT_SECRET = os.environ.get("AUTH_CLIENT_SECRET", "")
-PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://mihomo.jizhang.org").rstrip("/")
-REDIRECT_URI = PUBLIC_URL + "/auth/callback"
+# 可配置多个域名（逗号分隔），第一个为主域名；回调地址按访问的域名选择，每个都要在 auth 里登记
+PUBLIC_URLS = [u.strip().rstrip("/") for u in os.environ.get("PUBLIC_URL", "https://acis.vpn.jizhang.org").split(",") if u.strip()]
+PUBLIC_URL = PUBLIC_URLS[0]
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 HOST = os.environ.get("HUB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("HUB_PORT", "8097"))
 DATA_DIR = Path(os.environ.get("DATA_DIR", ROOT / "data"))
 FILES_DIR = Path(os.environ.get("FILES_DIR", ROOT / "files"))
+# 下载门户里的安装包；packages.json 可选，给每个包写标题和说明
+PACKAGES_DIR = Path(os.environ.get("PACKAGES_DIR", ROOT / "packages"))
+WEB_HOURS = int(os.environ.get("WEB_HOURS", "72"))
 TOKEN_DAYS = int(os.environ.get("TOKEN_DAYS", "30"))
 SECRET_FILE = DATA_DIR / ".hub-secret"
 USERS_FILE = DATA_DIR / "users.json"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 FILES_DIR.mkdir(parents=True, exist_ok=True)
+PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 if SECRET_FILE.exists():
     SIGN_KEY = SECRET_FILE.read_bytes()
@@ -230,6 +235,49 @@ def manifest() -> list[dict]:
     return out
 
 
+def package_list() -> list[dict]:
+    meta_file = PACKAGES_DIR / "packages.json"
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8")) if meta_file.exists() else {}
+    except ValueError:
+        meta = {}
+    out = []
+    for p in sorted(PACKAGES_DIR.iterdir(), key=lambda x: x.name):
+        if not p.is_file() or p.name.startswith(".") or p.name == "packages.json":
+            continue
+        st = p.stat()
+        key = "pkg:" + p.name
+        cached = _hash_cache.get(key)
+        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            digest = cached[2]
+        else:
+            digest = sha256_file(p)
+            _hash_cache[key] = (st.st_mtime, st.st_size, digest)
+        m = meta.get(p.name, {})
+        out.append(
+            {
+                "name": p.name,
+                "title": m.get("title") or p.name,
+                "desc": m.get("desc") or "",
+                "order": m.get("order", 100),
+                "adminOnly": bool(m.get("adminOnly")),
+                "size": st.st_size,
+                "sha256": digest,
+                "mtime": int(st.st_mtime),
+            }
+        )
+    out.sort(key=lambda x: (x["order"], x["name"]))
+    return out
+
+
+def fmt_size(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return str(n)
+
+
 # ------------------------------------------------------------------ return url
 # 面板跑在用户自己的电脑上，只允许回跳到本机 / 局域网地址，防止被拿去做开放重定向。
 
@@ -255,14 +303,14 @@ def valid_return(url: str) -> bool:
 # ------------------------------------------------------------------ oauth
 
 
-def exchange_code(code: str, verifier: str) -> dict:
+def exchange_code(code: str, verifier: str, redirect_uri: str) -> dict:
     form = urllib.parse.urlencode(
         {
             "grant_type": "authorization_code",
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
             "code": code,
-            "redirect_uri": REDIRECT_URI,
+            "redirect_uri": redirect_uri,
             "code_verifier": verifier,
         }
     ).encode()
@@ -288,6 +336,93 @@ a{{color:#b4532a}}</style></head><body><main><h1>{title}</h1>{body}</main></body
 
 def page(title: str, body: str) -> bytes:
     return PAGE.format(title=html.escape(title), body=body).encode()
+
+
+# ------------------------------------------------------------------ portal (下载门户)
+
+PORTAL_CSS = """
+:root{--bg:#f5efe6;--card:#fffaf3;--line:#e6dccd;--ink:#2b2420;--muted:#7a6c60;--accent:#b4532a;--accent-2:#9a4421;--chip:#f0e6d8}
+@media (prefers-color-scheme: dark){:root{--bg:#1d1916;--card:#26211d;--line:#3a322b;--ink:#f1e9df;--muted:#a8998b;--accent:#d9774b;--accent-2:#e88a5f;--chip:#332b25}}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink)}
+body{font:15px/1.65 -apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;min-height:100vh}
+.wrap{max-width:880px;margin:0 auto;padding:28px 16px 64px}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:28px}
+.mark{width:34px;height:34px;border-radius:10px;background:var(--accent);color:#fff;display:grid;place-items:center;flex:none}
+.brand{font-weight:700;font-size:17px;letter-spacing:.2px}.brand em{font-style:normal;color:var(--accent)}
+.who{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);flex-wrap:wrap}
+.chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--ink)}
+.chip.admin{background:var(--accent);color:#fff}
+h1{font-size:26px;line-height:1.3;margin:0 0 6px}.lede{color:var(--muted);margin:0 0 24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px 22px;margin-bottom:14px}
+.pkg{display:grid;grid-template-columns:1fr auto;gap:6px 18px;align-items:center}
+.pkg h3{margin:0;font-size:16px}.pkg p{margin:0;color:var(--muted);font-size:13.5px;grid-column:1}
+.meta{grid-column:1;font-size:12.5px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap}
+.meta code{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--chip);padding:1px 6px;border-radius:6px;cursor:pointer}
+.pkg .btn{grid-column:2;grid-row:1/span 3}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:12px;background:var(--accent);color:#fff;
+font:600 14px/1 inherit;padding:12px 18px;text-decoration:none;cursor:pointer;min-height:44px;white-space:nowrap}
+.btn:hover{background:var(--accent-2)}.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);min-height:34px;padding:7px 12px;font-size:13px}
+.steps{margin:0;padding-left:20px}.steps li{margin:6px 0}.muted{color:var(--muted)}
+.hero{max-width:440px;margin:12vh auto 0;text-align:left}.hero .btn{width:100%;margin-top:8px}
+.empty{color:var(--muted);text-align:center;padding:28px}
+code.k{background:var(--chip);padding:1px 6px;border-radius:6px;font-size:13px}
+form{margin:0}
+@media (max-width:560px){.pkg{grid-template-columns:1fr}.pkg .btn{grid-column:1;grid-row:auto;width:100%;margin-top:8px}h1{font-size:22px}}
+"""
+
+MARK_SVG = ('<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">'
+            '<circle cx="6" cy="12" r="2.4" fill="currentColor"/><circle cx="18" cy="6" r="2.4" fill="currentColor"/>'
+            '<circle cx="18" cy="18" r="2.4" fill="currentColor"/><path d="M8.2 10.9 15.8 7M8.2 13.1 15.8 17" '
+            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>')
+
+
+def portal_page(title: str, inner: str, who: tuple[str, str] | None = None) -> bytes:
+    who_html = ""
+    if who:
+        email, role = who
+        badge = '<span class="chip admin">管理员</span>' if role == "admin" else '<span class="chip">已授权</span>'
+        who_html = (f'<div class="who">{badge}<span>{html.escape(email)}</span>'
+                    '<form method="post" action="/web/logout"><button class="btn ghost" type="submit">退出</button></form></div>')
+    doc = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23b4532a'/%3E%3C/svg%3E">
+<style>{PORTAL_CSS}</style></head><body><div class="wrap">
+<header><span class="mark">{MARK_SVG}</span><span class="brand">ACIS <em>代理</em></span>{who_html}</header>
+{inner}</div>
+<script>document.addEventListener('click',e=>{{const c=e.target.closest('[data-copy]');if(!c)return;
+navigator.clipboard&&navigator.clipboard.writeText(c.dataset.copy).then(()=>{{const t=c.textContent;c.textContent='已复制';setTimeout(()=>c.textContent=t,1200)}})}});</script>
+</body></html>"""
+    return doc.encode()
+
+
+def portal_login_html(error: str = "") -> str:
+    err = f'<p style="color:var(--accent)">{html.escape(error)}</p>' if error else ""
+    return f"""<div class="hero"><h1>下载代理客户端</h1>
+<p class="lede">使用墨清账户登录。只有管理员和被授权的邮箱能下载安装包。</p>{err}
+<a class="btn" href="/web/login">使用墨清账户登录</a>
+<p class="muted" style="font-size:13px;margin-top:14px">登录由 <code class="k">auth.jizhang.org</code> 完成</p></div>"""
+
+
+def portal_home_html(role: str) -> str:
+    cards = []
+    for p in package_list():
+        if p["adminOnly"] and role != "admin":
+            continue
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(p["mtime"]))
+        desc = f'<p>{html.escape(p["desc"])}</p>' if p["desc"] else ""
+        cards.append(f"""<div class="card pkg"><h3>{html.escape(p["title"])}</h3>{desc}
+<div class="meta"><span>{fmt_size(p["size"])}</span><span>更新于 {when}</span>
+<span>SHA256 <code data-copy="{p["sha256"]}" title="点击复制完整校验值">{p["sha256"][:16]}…</code></span></div>
+<a class="btn" href="/dl/{urllib.parse.quote(p["name"])}" download>下载</a></div>""")
+    body = "".join(cards) or '<div class="card empty">暂时没有可下载的安装包</div>'
+    return f"""<h1>安装包</h1><p class="lede">Windows 一键包已内置 Node.js 运行时和 mihomo 内核，解压即可使用。</p>
+{body}
+<div class="card"><h3 style="margin:0 0 8px;font-size:16px">怎么用</h3><ol class="steps">
+<li>下载 Windows 一键包，解压到任意目录（建议放在纯英文路径下）。</li>
+<li>双击 <code class="k">安装.bat</code>：创建桌面快捷方式并打开控制台。</li>
+<li>控制台里点「使用墨清账户登录」，用你被授权的邮箱登录。</li>
+<li>管理员登录后会自动同步最新的配置模板和内核；概览页打开开关即可上网。</li>
+</ol><p class="muted" style="font-size:13px;margin:10px 0 0">局域网里的其他设备不用装，打开 <code class="k">主机IP:8080</code> 登录，按「我的账号」里的代理账号连接即可。</p></div>"""
 
 
 # ------------------------------------------------------------------ handler
@@ -358,6 +493,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self.route("DELETE")
 
+    def base_url(self) -> str:
+        host = (self.headers.get("Host") or "").lower()
+        for u in PUBLIC_URLS:
+            if urllib.parse.urlsplit(u).netloc.lower() == host:
+                return u
+        return PUBLIC_URL
+
+    def web_session(self) -> tuple[str, str] | None:
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "acis":
+                data = verify(v)
+                if data and data.get("t") == "web":
+                    email = str(data.get("e", "")).lower()
+                    role = role_of(email)
+                    return (email, role) if role else None
+        return None
+
+    def portal(self, status: int, title: str, inner: str, who=None, headers=None):
+        self.send(status, portal_page(title, inner, who), "text/html; charset=utf-8", headers)
+
     def route(self, method: str):
         gc()
         url = urllib.parse.urlsplit(self.path)
@@ -365,9 +521,19 @@ class Handler(BaseHTTPRequestHandler):
         q = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
         try:
             if method == "GET" and path == "/":
-                return self.html(200, "Mihomo Hub", "<p>代理控制台的登录与文件下发服务。</p><p>请在本机控制台里点「登录」。</p>")
+                who = self.web_session()
+                if not who:
+                    return self.portal(200, "ACIS 代理 · 下载", portal_login_html(q("error")))
+                return self.portal(200, "ACIS 代理 · 安装包", portal_home_html(who[1]), who)
             if method == "GET" and path == "/healthz":
                 return self.send(200, {"ok": True})
+            if method == "GET" and path == "/web/login":
+                return self.start_login(mode="web")
+            if method == "POST" and path == "/web/logout":
+                return self.send_redirect("/", {"Set-Cookie": "acis=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0"})
+            m = re.fullmatch(r"/dl/([A-Za-z0-9._()+-]{1,160})", path)
+            if method == "GET" and m:
+                return self.download(urllib.parse.unquote(m.group(1)))
             if method == "GET" and path == "/login":
                 return self.login(q("return"), q("state"))
             if method == "GET" and path == "/auth/callback":
@@ -381,23 +547,57 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"error {path}: {e!r}\n")
             return self.send(500, {"error": "服务器内部错误"})
 
+    def send_redirect(self, url: str, headers=None):
+        self.send_response(302)
+        self.send_header("Location", url)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+
+    def download(self, name: str):
+        who = self.web_session()
+        if not who:
+            return self.send_redirect("/")
+        pkg = next((p for p in package_list() if p["name"] == name), None)
+        if not pkg or (pkg["adminOnly"] and who[1] != "admin"):
+            return self.portal(404, "没有这个文件", '<div class="card empty">文件不存在或你没有权限下载。<br><br><a class="btn ghost" href="/">返回</a></div>', who)
+        f = PACKAGES_DIR / name
+        sys.stderr.write(f"download {name} by {who[0]}\n")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(f.stat().st_size))
+        self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + urllib.parse.quote(name))
+        self.send_header("Cache-Control", "private, no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            with f.open("rb") as fh:
+                while chunk := fh.read(1 << 16):
+                    self.wfile.write(chunk)
+        return None
+
     # ---- login
-    def login(self, ret: str, pstate: str):
+    def start_login(self, mode: str, ret: str = "", pstate: str = ""):
         if not CLIENT_SECRET:
             return self.html(503, "未配置", "<p>hub 尚未配置 <code>AUTH_CLIENT_SECRET</code>。</p>")
-        if not valid_return(ret):
-            return self.html(400, "回跳地址不合法", "<p>只允许回到本机或局域网的控制台。</p>")
-        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", pstate or ""):
-            return self.html(400, "参数错误", "<p>缺少 state。</p>")
+        redirect_uri = self.base_url() + "/auth/callback"
         verifier = b64url(secrets.token_bytes(48))
         challenge = b64url(hashlib.sha256(verifier.encode()).digest())
         hstate = b64url(secrets.token_bytes(24))
         with LOCK:
-            PENDING[hstate] = {"verifier": verifier, "return": ret, "pstate": pstate, "exp": time.time() + 600}
+            PENDING[hstate] = {
+                "verifier": verifier,
+                "mode": mode,
+                "return": ret,
+                "pstate": pstate,
+                "redirect_uri": redirect_uri,
+                "exp": time.time() + 600,
+            }
         params = urllib.parse.urlencode(
             {
                 "client_id": CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
+                "redirect_uri": redirect_uri,
                 "response_type": "code",
                 "scope": "openid profile email",
                 "state": hstate,
@@ -407,15 +607,23 @@ class Handler(BaseHTTPRequestHandler):
         )
         return self.redirect(f"{AUTH_BASE}/oauth/authorize?{params}")
 
+    def login(self, ret: str, pstate: str):
+        if not valid_return(ret):
+            return self.html(400, "回跳地址不合法", "<p>只允许回到本机或局域网的控制台。</p>")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", pstate or ""):
+            return self.html(400, "参数错误", "<p>缺少 state。</p>")
+        return self.start_login(mode="panel", ret=ret, pstate=pstate)
+
     def callback(self, code: str, hstate: str, error: str):
         with LOCK:
             tx = PENDING.pop(hstate, None)
         if not tx:
-            return self.html(400, "登录已过期", "<p>请回到控制台重新点「登录」。</p>")
+            return self.html(400, "登录已过期", "<p>请回到原页面重新点「登录」。</p>")
+        web = tx["mode"] == "web"
         if error or not code:
             return self.html(400, "登录未完成", f"<p>{html.escape(error or '没有拿到授权码')}</p>")
         try:
-            data = exchange_code(code, tx["verifier"])
+            data = exchange_code(code, tx["verifier"], tx["redirect_uri"])
         except (urllib.error.URLError, ValueError) as e:
             sys.stderr.write(f"token exchange failed: {e!r}\n")
             return self.html(502, "登录失败", "<p>认证中心换取令牌失败，请重试。</p>")
@@ -427,14 +635,18 @@ class Handler(BaseHTTPRequestHandler):
             )
         role = role_of(email)
         if not role:
-            return self.html(
-                403,
-                "没有访问权限",
-                f"<p>账号 <code>{html.escape(email)}</code> 还没有被管理员授权。</p>"
-                "<p>请把这个邮箱发给管理员，加入后再登录。</p>",
-            )
+            msg = (f"<p>账号 <code>{html.escape(email)}</code> 还没有被管理员授权。</p>"
+                   "<p>请把这个邮箱发给管理员，加入后再登录。</p>")
+            if web:
+                return self.portal(403, "没有访问权限", f'<div class="hero"><h1>没有访问权限</h1>{msg}<a class="btn ghost" href="/">返回</a></div>')
+            return self.html(403, "没有访问权限", msg)
         if role == "admin":
             ensure_record(email)
+        if web:
+            cookie = sign({"t": "web", "e": email, "exp": int(time.time()) + WEB_HOURS * 3600})
+            return self.send_redirect(
+                "/", {"Set-Cookie": f"acis={cookie}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={WEB_HOURS * 3600}"}
+            )
         ticket = b64url(secrets.token_bytes(24))
         with LOCK:
             TICKETS[ticket] = {

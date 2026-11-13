@@ -1,4 +1,4 @@
-# 启动控制台：确保内核在跑 -> 起 Node 服务 -> 打开浏览器
+﻿# 启动控制台：确保内核在跑 -> 起 Node 服务 -> 打开浏览器
 
 $root      = Split-Path -Parent $MyInvocation.MyCommand.Path
 $proxyRoot = Split-Path -Parent $root
@@ -22,5 +22,9 @@ if (-not (Get-Process mihomo-windows-amd64)) {
 # 等服务起来再开浏览器
 Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-Command',"Start-Sleep -Seconds 2; Start-Process 'http://127.0.0.1:8080'" -WindowStyle Hidden
 
+# 优先用安装包自带的 Node 运行时（runtime\node.exe），没有再用系统里的 node
+$node = Join-Path $proxyRoot 'runtime\node.exe'
+if (-not (Test-Path $node)) { $node = 'node' }
+
 Set-Location $root
-node server.js
+& $node server.js
