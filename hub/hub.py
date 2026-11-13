@@ -55,7 +55,7 @@ AUTH_BASE = os.environ.get("AUTH_BASE_URL", "https://auth.jizhang.org").rstrip("
 CLIENT_ID = os.environ.get("AUTH_CLIENT_ID", "mihomo-panel")
 CLIENT_SECRET = os.environ.get("AUTH_CLIENT_SECRET", "")
 # 可配置多个域名（逗号分隔），第一个为主域名；回调地址按访问的域名选择，每个都要在 auth 里登记
-PUBLIC_URLS = [u.strip().rstrip("/") for u in os.environ.get("PUBLIC_URL", "https://acis.vpn.jizhang.org").split(",") if u.strip()]
+PUBLIC_URLS = [u.strip().rstrip("/") for u in os.environ.get("PUBLIC_URL", "https://acis-vpn.jizhang.org").split(",") if u.strip()]
 PUBLIC_URL = PUBLIC_URLS[0]
 ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 HOST = os.environ.get("HUB_HOST", "127.0.0.1")
@@ -323,106 +323,148 @@ def exchange_code(code: str, verifier: str, redirect_uri: str) -> dict:
         return json.loads(r.read())
 
 
-# ------------------------------------------------------------------ pages
+# ------------------------------------------------------------------ site（官网 / 下载门户）
 
-PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
-<style>body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5efe6;color:#2b2420;
-font:15px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif}}main{{max-width:420px;padding:32px 28px;
-background:#fffaf3;border:1px solid #e6dccd;border-radius:18px;margin:16px}}h1{{font-size:20px;margin:0 0 8px}}
-p{{margin:6px 0;color:#6b5d52}}code{{background:#f0e6d8;padding:1px 6px;border-radius:6px}}
-a{{color:#b4532a}}</style></head><body><main><h1>{title}</h1>{body}</main></body></html>"""
-
-
-def page(title: str, body: str) -> bytes:
-    return PAGE.format(title=html.escape(title), body=body).encode()
-
-
-# ------------------------------------------------------------------ portal (下载门户)
-
-PORTAL_CSS = """
-:root{--bg:#f5efe6;--card:#fffaf3;--line:#e6dccd;--ink:#2b2420;--muted:#7a6c60;--accent:#b4532a;--accent-2:#9a4421;--chip:#f0e6d8}
-@media (prefers-color-scheme: dark){:root{--bg:#1d1916;--card:#26211d;--line:#3a322b;--ink:#f1e9df;--muted:#a8998b;--accent:#d9774b;--accent-2:#e88a5f;--chip:#332b25}}
-*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink)}
-body{font:15px/1.65 -apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;min-height:100vh}
-.wrap{max-width:880px;margin:0 auto;padding:28px 16px 64px}
-header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:28px}
-.mark{width:34px;height:34px;border-radius:10px;background:var(--accent);color:#fff;display:grid;place-items:center;flex:none}
-.brand{font-weight:700;font-size:17px;letter-spacing:.2px}.brand em{font-style:normal;color:var(--accent)}
-.who{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted);flex-wrap:wrap}
-.chip{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--ink)}
-.chip.admin{background:var(--accent);color:#fff}
-h1{font-size:26px;line-height:1.3;margin:0 0 6px}.lede{color:var(--muted);margin:0 0 24px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px 22px;margin-bottom:14px}
-.pkg{display:grid;grid-template-columns:1fr auto;gap:6px 18px;align-items:center}
-.pkg h3{margin:0;font-size:16px}.pkg p{margin:0;color:var(--muted);font-size:13.5px;grid-column:1}
-.meta{grid-column:1;font-size:12.5px;color:var(--muted);display:flex;gap:14px;flex-wrap:wrap}
-.meta code{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--chip);padding:1px 6px;border-radius:6px;cursor:pointer}
-.pkg .btn{grid-column:2;grid-row:1/span 3}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0;border-radius:12px;background:var(--accent);color:#fff;
-font:600 14px/1 inherit;padding:12px 18px;text-decoration:none;cursor:pointer;min-height:44px;white-space:nowrap}
-.btn:hover{background:var(--accent-2)}.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);min-height:34px;padding:7px 12px;font-size:13px}
-.steps{margin:0;padding-left:20px}.steps li{margin:6px 0}.muted{color:var(--muted)}
-.hero{max-width:440px;margin:12vh auto 0;text-align:left}.hero .btn{width:100%;margin-top:8px}
-.empty{color:var(--muted);text-align:center;padding:28px}
-code.k{background:var(--chip);padding:1px 6px;border-radius:6px;font-size:13px}
+SITE_CSS = """
+:root{--bg:#fbfaf8;--surface:#fff;--line:#ebe7e1;--ink:#1c1917;--ink-2:#57534e;--muted:#8a847d;
+--accent:#b4532a;--accent-ink:#fff;--accent-soft:#f6ece6;--ok:#2f7d4f;--radius:14px}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#141211;--surface:#1c1a18;--line:#2c2926;
+--ink:#f2efeb;--ink-2:#bdb6ae;--muted:#8d867e;--accent:#e07a4b;--accent-ink:#1a0e08;--accent-soft:#2a1d17;--ok:#5cc28a}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column}
+a{color:inherit}
+.container{width:100%;max-width:960px;margin:0 auto;padding:0 16px}
+.nav{height:64px;display:flex;align-items:center;gap:12px}
+.logo{display:flex;align-items:center;gap:10px;text-decoration:none;font-weight:650;letter-spacing:.3px}
+.logo i{width:28px;height:28px;border-radius:8px;background:var(--accent);color:var(--accent-ink);display:grid;place-items:center}
+.nav .sp{flex:1}
+.nav .who{font-size:13px;color:var(--ink-2);display:flex;align-items:center;gap:12px;min-width:0}
+.nav .who span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+.tag{font-style:normal;font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-weight:600;flex:none}
+main{flex:1}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:44px;padding:0 20px;border-radius:10px;border:1px solid transparent;
+background:var(--accent);color:var(--accent-ink);font:600 14.5px/1 inherit;text-decoration:none;cursor:pointer;white-space:nowrap;transition:filter .15s}
+.btn:hover{filter:brightness(1.06)}.btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn.quiet{background:transparent;color:var(--ink-2);border-color:var(--line);height:34px;padding:0 12px;font-size:13px;font-weight:500}
+.btn.quiet:hover{color:var(--ink);filter:none;border-color:var(--muted)}
+.btn svg{width:16px;height:16px}
+.hero{padding:72px 0 56px}
+.eyebrow{font-size:13px;color:var(--accent);font-weight:600;letter-spacing:.4px;margin:0 0 14px}
+.hero h1{font-size:clamp(30px,5vw,46px);line-height:1.15;letter-spacing:-.5px;margin:0 0 16px;font-weight:700}
+.hero p.lead{font-size:17px;color:var(--ink-2);max-width:540px;margin:0 0 28px}
+.hero .actions{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.hero .note{font-size:13px;color:var(--muted)}
+.features{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-bottom:72px}
+.feature{background:var(--surface);padding:22px 22px 24px}
+.feature b{display:block;font-size:15px;margin-bottom:6px}.feature span{color:var(--ink-2);font-size:14px}
+.feature svg{width:20px;height:20px;color:var(--accent);margin-bottom:12px}
+.section-title{font-size:13px;color:var(--muted);font-weight:600;letter-spacing:.4px;margin:0 0 12px}
+.page-head{padding:44px 0 24px}.page-head h1{font-size:28px;margin:0 0 6px;letter-spacing:-.3px}.page-head p{margin:0;color:var(--ink-2)}
+.list{border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);overflow:hidden;margin-bottom:36px}
+.item{display:flex;align-items:center;gap:16px;padding:18px 20px}.item+.item{border-top:1px solid var(--line)}
+.item .ic{width:40px;height:40px;border-radius:10px;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;flex:none}
+.item .ic svg{width:20px;height:20px}
+.item .body{flex:1;min-width:0}.item h3{margin:0;font-size:15.5px;font-weight:600}
+.item p{margin:2px 0 0;font-size:13.5px;color:var(--ink-2)}
+.item .meta{margin-top:6px;font-size:12.5px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap}
+.hash{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:none;border:0;padding:0;color:var(--muted);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.hash:hover{color:var(--ink)}
+.steps{list-style:none;margin:0 0 72px;padding:0;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;counter-reset:s}
+.steps li{counter-increment:s;padding:18px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);font-size:14px;color:var(--ink-2)}
+.steps li::before{content:counter(s);display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-weight:700;font-size:12.5px;margin-bottom:10px}
+.steps b{color:var(--ink);font-weight:600}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--accent-soft);color:var(--ink);padding:1px 6px;border-radius:5px}
+.notice{max-width:440px;margin:12vh auto 0;text-align:center}
+.notice h1{font-size:24px;margin:0 0 10px}.notice p{color:var(--ink-2);margin:0 0 6px}.notice .btn{margin-top:20px}
+.alert{border:1px solid var(--line);background:var(--accent-soft);color:var(--ink);border-radius:10px;padding:10px 14px;font-size:14px;margin:0 0 20px;max-width:540px}
+.empty{padding:36px 20px;text-align:center;color:var(--muted)}
+footer{border-top:1px solid var(--line);margin-top:auto}
+footer .container{height:60px;display:flex;align-items:center;justify-content:space-between;font-size:12.5px;color:var(--muted);gap:12px}
 form{margin:0}
-@media (max-width:560px){.pkg{grid-template-columns:1fr}.pkg .btn{grid-column:1;grid-row:auto;width:100%;margin-top:8px}h1{font-size:22px}}
+@media (max-width:760px){.features{grid-template-columns:1fr}.steps{grid-template-columns:1fr 1fr}.hero{padding:44px 0 40px}}
+@media (max-width:520px){.steps{grid-template-columns:1fr}.item{flex-wrap:wrap}.item .btn{width:100%}.nav .who span{max-width:120px}}
 """
 
-MARK_SVG = ('<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true">'
-            '<circle cx="6" cy="12" r="2.4" fill="currentColor"/><circle cx="18" cy="6" r="2.4" fill="currentColor"/>'
-            '<circle cx="18" cy="18" r="2.4" fill="currentColor"/><path d="M8.2 10.9 15.8 7M8.2 13.1 15.8 17" '
-            'stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>')
+ICON = {
+    "logo": '<svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="6" cy="12" r="2.4" fill="currentColor"/><circle cx="18" cy="6" r="2.4" fill="currentColor"/><circle cx="18" cy="18" r="2.4" fill="currentColor"/><path d="M8.2 10.9 15.8 7M8.2 13.1 15.8 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    "arrow": '<svg viewBox="0 0 24 24" fill="none"><path d="M5 12h13m-5-6 6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "down": '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "box": '<svg viewBox="0 0 24 24" fill="none"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5v-9Z M4 7.5l8 4.5 8-4.5M12 12v9" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    "bolt": '<svg viewBox="0 0 24 24" fill="none"><path d="M13 3 5 14h6l-1 7 8-11h-6l1-7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    "lock": '<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="10.5" width="14" height="10" rx="2.5" stroke="currentColor" stroke-width="1.6"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" stroke="currentColor" stroke-width="1.6"/></svg>',
+    "wifi": '<svg viewBox="0 0 24 24" fill="none"><path d="M2.5 9a14 14 0 0 1 19 0M6 12.6a9 9 0 0 1 12 0M9.5 16.1a4 4 0 0 1 5 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="12" cy="19.4" r="1.2" fill="currentColor"/></svg>',
+}
+
+SITE_JS = """document.addEventListener('click',function(e){var b=e.target.closest('[data-copy]');if(!b||!navigator.clipboard)return;
+navigator.clipboard.writeText(b.dataset.copy).then(function(){var t=b.textContent;b.textContent='已复制完整 SHA256';setTimeout(function(){b.textContent=t},1400)})});"""
 
 
-def portal_page(title: str, inner: str, who: tuple[str, str] | None = None) -> bytes:
-    who_html = ""
+def site_page(title: str, inner: str, who: tuple[str, str] | None = None, nav_login: bool = True) -> bytes:
     if who:
         email, role = who
-        badge = '<span class="chip admin">管理员</span>' if role == "admin" else '<span class="chip">已授权</span>'
-        who_html = (f'<div class="who">{badge}<span>{html.escape(email)}</span>'
-                    '<form method="post" action="/web/logout"><button class="btn ghost" type="submit">退出</button></form></div>')
+        tag = '<em class="tag">管理员</em>' if role == "admin" else ""
+        right = (f'<div class="who">{tag}<span title="{html.escape(email)}">{html.escape(email)}</span>'
+                 '<form method="post" action="/web/logout"><button class="btn quiet" type="submit">退出</button></form></div>')
+    elif nav_login:
+        right = '<a class="btn quiet" href="/web/login">登录</a>'
+    else:
+        right = ""
+    year = time.strftime("%Y")
     doc = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23b4532a'/%3E%3C/svg%3E">
-<style>{PORTAL_CSS}</style></head><body><div class="wrap">
-<header><span class="mark">{MARK_SVG}</span><span class="brand">ACIS <em>代理</em></span>{who_html}</header>
-{inner}</div>
-<script>document.addEventListener('click',e=>{{const c=e.target.closest('[data-copy]');if(!c)return;
-navigator.clipboard&&navigator.clipboard.writeText(c.dataset.copy).then(()=>{{const t=c.textContent;c.textContent='已复制';setTimeout(()=>c.textContent=t,1200)}})}});</script>
-</body></html>"""
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">
+<meta name="robots" content="noindex"><title>{html.escape(title)}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23b4532a'/%3E%3Ccircle cx='8' cy='12' r='2' fill='white'/%3E%3Ccircle cx='16' cy='7.5' r='2' fill='white'/%3E%3Ccircle cx='16' cy='16.5' r='2' fill='white'/%3E%3C/svg%3E">
+<style>{SITE_CSS}</style></head><body>
+<header class="container nav"><a class="logo" href="/"><i>{ICON["logo"]}</i>ACIS</a><span class="sp"></span>{right}</header>
+<main class="container">{inner}</main>
+<footer><div class="container"><span>© {year} ACIS</span><span>账户由 auth.jizhang.org 提供</span></div></footer>
+<script>{SITE_JS}</script></body></html>"""
     return doc.encode()
 
 
-def portal_login_html(error: str = "") -> str:
-    err = f'<p style="color:var(--accent)">{html.escape(error)}</p>' if error else ""
-    return f"""<div class="hero"><h1>下载代理客户端</h1>
-<p class="lede">使用墨清账户登录。只有管理员和被授权的邮箱能下载安装包。</p>{err}
-<a class="btn" href="/web/login">使用墨清账户登录</a>
-<p class="muted" style="font-size:13px;margin-top:14px">登录由 <code class="k">auth.jizhang.org</code> 完成</p></div>"""
+def site_landing(error: str = "") -> str:
+    alert = f'<p class="alert">{html.escape(error)}</p>' if error else ""
+    feats = [
+        ("bolt", "解压即用", "内置运行时和内核，双击安装，无需配置环境。"),
+        ("lock", "账户登录", "墨清账户统一登录，仅授权邮箱可用，随时收回。"),
+        ("wifi", "局域网共享", "一台电脑安装，同网络的手机和电脑都能接入。"),
+    ]
+    feat_html = "".join(f'<div class="feature">{ICON[i]}<b>{t}</b><span>{d}</span></div>' for i, t, d in feats)
+    return f"""<section class="hero"><p class="eyebrow">ACIS 代理</p>
+<h1>一个安装包，<br>整个局域网都能用。</h1>
+<p class="lead">Windows 客户端带网页控制台：一键开关、切换节点、查看流量，并给同一网络的设备分发独立账号。</p>
+{alert}<div class="actions"><a class="btn" href="/web/login">登录并下载{ICON["arrow"]}</a>
+<span class="note">需要被授权的墨清账户</span></div></section>
+<section class="features">{feat_html}</section>"""
 
 
-def portal_home_html(role: str) -> str:
-    cards = []
+def site_downloads(role: str) -> str:
+    rows = []
     for p in package_list():
         if p["adminOnly"] and role != "admin":
             continue
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(p["mtime"]))
+        when = time.strftime("%Y-%m-%d", time.localtime(p["mtime"]))
         desc = f'<p>{html.escape(p["desc"])}</p>' if p["desc"] else ""
-        cards.append(f"""<div class="card pkg"><h3>{html.escape(p["title"])}</h3>{desc}
-<div class="meta"><span>{fmt_size(p["size"])}</span><span>更新于 {when}</span>
-<span>SHA256 <code data-copy="{p["sha256"]}" title="点击复制完整校验值">{p["sha256"][:16]}…</code></span></div>
-<a class="btn" href="/dl/{urllib.parse.quote(p["name"])}" download>下载</a></div>""")
-    body = "".join(cards) or '<div class="card empty">暂时没有可下载的安装包</div>'
-    return f"""<h1>安装包</h1><p class="lede">Windows 一键包已内置 Node.js 运行时和 mihomo 内核，解压即可使用。</p>
-{body}
-<div class="card"><h3 style="margin:0 0 8px;font-size:16px">怎么用</h3><ol class="steps">
-<li>下载 Windows 一键包，解压到任意目录（建议放在纯英文路径下）。</li>
-<li>双击 <code class="k">安装.bat</code>：创建桌面快捷方式并打开控制台。</li>
-<li>控制台里点「使用墨清账户登录」，用你被授权的邮箱登录。</li>
-<li>管理员登录后会自动同步最新的配置模板和内核；概览页打开开关即可上网。</li>
-</ol><p class="muted" style="font-size:13px;margin:10px 0 0">局域网里的其他设备不用装，打开 <code class="k">主机IP:8080</code> 登录，按「我的账号」里的代理账号连接即可。</p></div>"""
+        rows.append(f"""<div class="item"><span class="ic">{ICON["box"]}</span><div class="body"><h3>{html.escape(p["title"])}</h3>{desc}
+<div class="meta"><span>{fmt_size(p["size"])}</span><span>{when}</span>
+<button class="hash" type="button" data-copy="{p["sha256"]}" title="复制完整 SHA256">SHA256 {p["sha256"][:12]}</button></div></div>
+<a class="btn" href="/dl/{urllib.parse.quote(p["name"])}" download>{ICON["down"]}下载</a></div>""")
+    body = "".join(rows) or '<div class="empty">暂时没有可下载的安装包</div>'
+    return f"""<section class="page-head"><h1>下载</h1><p>Windows 10 / 11，64 位。</p></section>
+<div class="list">{body}</div>
+<p class="section-title">安装步骤</p>
+<ol class="steps">
+<li><b>解压</b><br>放到任意目录，建议纯英文路径。</li>
+<li><b>双击 安装.bat</b><br>创建桌面快捷方式并打开控制台。</li>
+<li><b>登录</b><br>控制台里用授权邮箱登录墨清账户。</li>
+<li><b>开启</b><br>概览页打开开关即可。其他设备访问 <code>本机IP:8080</code>。</li>
+</ol>"""
+
+
+def site_notice(title: str, lines: list[str], back: str = "返回首页") -> str:
+    ps = "".join(f"<p>{x}</p>" for x in lines)
+    return f'<div class="notice"><h1>{html.escape(title)}</h1>{ps}<a class="btn quiet" href="/">{html.escape(back)}</a></div>'
 
 
 # ------------------------------------------------------------------ handler
@@ -450,7 +492,9 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
 
     def html(self, status: int, title: str, body: str):
-        self.send(status, page(title, body), "text/html; charset=utf-8")
+        # body 是一段或多段 <p>…</p>
+        lines = re.findall(r"<p>(.*?)</p>", body, re.S) or [body]
+        self.send(status, site_page(title, site_notice(title, lines), nav_login=False), "text/html; charset=utf-8")
 
     def redirect(self, url: str):
         self.send_response(302)
@@ -512,7 +556,7 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def portal(self, status: int, title: str, inner: str, who=None, headers=None):
-        self.send(status, portal_page(title, inner, who), "text/html; charset=utf-8", headers)
+        self.send(status, site_page(title, inner, who), "text/html; charset=utf-8", headers)
 
     def route(self, method: str):
         gc()
@@ -523,8 +567,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/":
                 who = self.web_session()
                 if not who:
-                    return self.portal(200, "ACIS 代理 · 下载", portal_login_html(q("error")))
-                return self.portal(200, "ACIS 代理 · 安装包", portal_home_html(who[1]), who)
+                    return self.portal(200, "ACIS 代理", site_landing(q("error")))
+                return self.portal(200, "下载 · ACIS 代理", site_downloads(who[1]), who)
             if method == "GET" and path == "/healthz":
                 return self.send(200, {"ok": True})
             if method == "GET" and path == "/web/login":
@@ -562,7 +606,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_redirect("/")
         pkg = next((p for p in package_list() if p["name"] == name), None)
         if not pkg or (pkg["adminOnly"] and who[1] != "admin"):
-            return self.portal(404, "没有这个文件", '<div class="card empty">文件不存在或你没有权限下载。<br><br><a class="btn ghost" href="/">返回</a></div>', who)
+            return self.portal(404, "没有这个文件", site_notice("没有这个文件", ["文件不存在，或你没有下载权限。"]), who)
         f = PACKAGES_DIR / name
         sys.stderr.write(f"download {name} by {who[0]}\n")
         self.send_response(200)
@@ -638,7 +682,7 @@ class Handler(BaseHTTPRequestHandler):
             msg = (f"<p>账号 <code>{html.escape(email)}</code> 还没有被管理员授权。</p>"
                    "<p>请把这个邮箱发给管理员，加入后再登录。</p>")
             if web:
-                return self.portal(403, "没有访问权限", f'<div class="hero"><h1>没有访问权限</h1>{msg}<a class="btn ghost" href="/">返回</a></div>')
+                return self.portal(403, "没有访问权限", site_notice("没有访问权限", re.findall(r"<p>(.*?)</p>", msg)))
             return self.html(403, "没有访问权限", msg)
         if role == "admin":
             ensure_record(email)

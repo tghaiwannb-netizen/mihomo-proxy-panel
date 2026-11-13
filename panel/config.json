@@ -6,6 +6,6 @@
   "mihomoDir": "../mihomo",
   "mihomoExe": "mihomo-windows-amd64.exe",
   "sessionHours": 12,
-  "hub": "https://acis.vpn.jizhang.org",
+  "hub": "https://acis-vpn.jizhang.org",
   "syncMinutes": 30
 }

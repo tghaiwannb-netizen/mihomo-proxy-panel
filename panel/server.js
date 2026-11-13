@@ -30,7 +30,7 @@ const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
 const PORT = Number(config.port) || 8080;
 const SESSION_HOURS = Number(config.sessionHours) || 12;
 const LAN_PORT = Number(config.lanPort) || 7891;
-const HUB = String(config.hub || 'https://acis.vpn.jizhang.org').replace(/\/+$/, '');
+const HUB = String(config.hub || 'https://acis-vpn.jizhang.org').replace(/\/+$/, '');
 const SYNC_MINUTES = Number(config.syncMinutes) || 30;
 
 let secret;

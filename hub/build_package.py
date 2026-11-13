@@ -30,7 +30,7 @@ FILES_DIR = Path(os.environ.get("FILES_DIR", HUB / "files"))
 PACKAGES_DIR = Path(os.environ.get("PACKAGES_DIR", HUB / "packages"))
 CACHE = HUB / "build-cache"
 REPO = "https://github.com/tghaiwannb-netizen/mihomo-proxy-panel.git"
-HUB_URL = "https://acis.vpn.jizhang.org"
+HUB_URL = "https://acis-vpn.jizhang.org"
 ROOT_NAME = "ACIS-Proxy"
 UA = {"User-Agent": "acis-package-builder"}
 

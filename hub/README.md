@@ -1,7 +1,7 @@
 # mihomo-hub（服务器端）
 
 代理控制台的服务器端 + 安装包下载门户，零依赖 Python 3 服务。
-主域名 `https://acis.vpn.jizhang.org`（下载门户），`https://mihomo.jizhang.org` 作为别名保留给旧版控制台。
+主域名 `https://acis-vpn.jizhang.org`（下载门户），`https://mihomo.jizhang.org` 作为别名保留给旧版控制台。
 
 ```
 浏览器 → 本机面板 /auth/login → hub /login → auth.jizhang.org 登录
@@ -39,7 +39,7 @@ curl -s https://mihomo.jizhang.org/healthz
 
 ## 下载门户
 
-`https://acis.vpn.jizhang.org/`：用墨清账户登录，管理员和被授权的邮箱可以下载
+`https://acis-vpn.jizhang.org/`：用墨清账户登录，管理员和被授权的邮箱可以下载
 `/opt/mihomo-hub/packages/` 里的安装包；`packages.json` 写标题、说明、排序、`adminOnly`。
 
 重新打包（拉 fork 的 `auth-jizhang-hub` 分支 + 官方 Node.js 22 + 下发目录里的内核和模板）：
